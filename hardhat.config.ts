@@ -83,7 +83,7 @@ function getRemappings() {
 }
 
 const chainIds = {
-  zama: 8009,
+  zama: 9000,
   local: 9000,
   localNetwork1: 9000,
   multipleValidatorTestnet: 8009,
@@ -102,7 +102,7 @@ function getChainConfig(chain: keyof typeof chainIds): NetworkUserConfig {
       jsonRpcUrl = "https://rpc.fhe-ethermint.zama.ai";
       break;
     case "zama":
-      jsonRpcUrl = "https://devnet.zama.ai";
+      jsonRpcUrl = "https://fhevm-0.kms-dev-v1.bc.zama.team:8545";
       break;
   }
   return {
@@ -169,7 +169,7 @@ const config: HardhatUserConfig = {
       },
     }),
   },
-  defaultNetwork: "local",
+  defaultNetwork: "zama",
   namedAccounts: {
     deployer: 0,
   },

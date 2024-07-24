@@ -8,6 +8,7 @@ task("task:deployGateway")
   .addParam("ownerAddress", "The owner address")
   .setAction(async function (taskArguments: TaskArguments, { ethers }) {
     const deployer = new ethers.Wallet(taskArguments.privateKey).connect(ethers.provider);
+    console.log(`deployer Gateway: ${deployer.address}`)
     const envConfig2 = dotenv.parse(fs.readFileSync("node_modules/fhevm/lib/.env.kmsverifier"));
     const gatewayFactory = await ethers.getContractFactory("GatewayContract");
     const Gateway = await gatewayFactory
@@ -26,6 +27,8 @@ task("task:deployGateway")
 
 task("task:deployACL").setAction(async function (taskArguments: TaskArguments, { ethers }) {
   const deployer = (await ethers.getSigners())[9];
+  console.log(`deployer ACL: ${deployer.address}`)
+  console.log(`deployer ACL: ${deployer.privateKey}`)
   const factory = await ethers.getContractFactory("ACL");
   const envConfigExec = dotenv.parse(fs.readFileSync("node_modules/fhevm/lib/.env.exec"));
   const acl = await factory.connect(deployer).deploy(envConfigExec.TFHE_EXECUTOR_CONTRACT_ADDRESS);

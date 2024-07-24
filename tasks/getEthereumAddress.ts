@@ -15,6 +15,11 @@ const getEthereumAddress =
     }
     const wallet = ethers.HDNodeWallet.fromMnemonic(mnemonic, `m/44'/60'/0'/0`);
     console.log(wallet.deriveChild(index).address);
+
+    const deployer = (await ethers.getSigners())[9];
+    console.log(`deployer ACL: ${deployer.address}`)
+    console.log(`deployer ACL: ${deployer.privateKey}`)
+
   };
 
 task(

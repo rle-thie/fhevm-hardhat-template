@@ -29,8 +29,10 @@ export const createInstances = async (accounts: Signers): Promise<FhevmInstances
 export const createInstance = async () => {
   const instance = await fhevmjs.createInstance({
     networkUrl: hre.network.config.url,
-    gatewayUrl: "http://localhost:7077",
+    gatewayUrl: "https://gateway.kms-dev-v1.bc.zama.team:7077",
   });
+  console.log(instance.networkUrl)
+  console.log(instance.gatewayUrl)
   return instance;
 };
 
