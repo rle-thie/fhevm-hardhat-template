@@ -88,6 +88,7 @@ services:
     volumes:
       - $PWD/network-fhe-keys:/network-fhe-keys:Z
       - ../setup.sh:/config/setup.sh:Z
+      - ../run_developer_image.sh:/config/run_developer_image.sh:Z
     security_opt:
       - no-new-privileges:true
     healthcheck:
