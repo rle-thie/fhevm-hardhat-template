@@ -40,6 +40,12 @@ describe("TestAsyncDecrypt", function () {
     expect(y).to.equal(true);
   });
 
+  it("test async decrypt bool would fail if maxTimestamp is above 1 day", async function () {
+    await expect(this.contract.connect(this.signers.carol).requestBoolAboveDelay()).to.be.revertedWith(
+      "maxTimestamp exceeded MAX_DELAY",
+    );
+  });
+
   it("test async decrypt uint4", async function () {
     const tx2 = await this.contract.connect(this.signers.carol).requestUint4({ gasLimit: 5_000_000 });
     await tx2.wait();
