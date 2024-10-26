@@ -1,38 +1,38 @@
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 import {
   clientKeyDecryptor,
   createEIP712,
   createInstance as createFhevmInstance,
   generateKeypair,
   getCiphertextCallParams,
-} from 'fhevmjs';
-import { readFileSync } from 'fs';
-import * as fs from 'fs';
-import { ethers, ethers as hethers, network } from 'hardhat';
-import { homedir } from 'os';
-import path from 'path';
+} from "fhevmjs";
+import { readFileSync } from "fs";
+import * as fs from "fs";
+import { ethers, ethers as hethers, network } from "hardhat";
+import { homedir } from "os";
+import path from "path";
 
-import { awaitCoprocessor, getClearText } from './coprocessorUtils';
-import { createEncryptedInputMocked, reencryptRequestMocked } from './fhevmjsMocked';
-import type { Signers } from './signers';
-import { FhevmInstances } from './types';
+import { awaitCoprocessor, getClearText } from "./coprocessorUtils";
+import { createEncryptedInputMocked, reencryptRequestMocked } from "./fhevmjsMocked";
+import type { Signers } from "./signers";
+import { FhevmInstances } from "./types";
 
 const FHE_CLIENT_KEY_PATH = process.env.FHE_CLIENT_KEY_PATH;
 
 let clientKey: Uint8Array | undefined;
 
 const kmsAdd = dotenv.parse(
-  fs.readFileSync('node_modules/fhevm-core-contracts/addresses/.env.kmsverifier'),
+  fs.readFileSync("node_modules/fhevm-core-contracts/addresses/.env.kmsverifier"),
 ).KMS_VERIFIER_CONTRACT_ADDRESS;
 const aclAdd = dotenv.parse(
-  fs.readFileSync('node_modules/fhevm-core-contracts/addresses/.env.acl'),
+  fs.readFileSync("node_modules/fhevm-core-contracts/addresses/.env.acl"),
 ).ACL_CONTRACT_ADDRESS;
 
 const createInstanceMocked = async () => {
   const instance = {
     reencrypt: reencryptRequestMocked,
     createEncryptedInput: createEncryptedInputMocked,
-    getPublicKey: () => '0xFFAA44433',
+    getPublicKey: () => "0xFFAA44433",
     generateKeypair: generateKeypair,
     createEIP712: createEIP712(network.config.chainId),
   };
@@ -42,7 +42,7 @@ const createInstanceMocked = async () => {
 export const createInstances = async (accounts: Signers): Promise<FhevmInstances> => {
   // Create instance
   const instances: FhevmInstances = {} as FhevmInstances;
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await Promise.all(
       Object.keys(accounts).map(async (k) => {
         instances[k as keyof FhevmInstances] = await createInstanceMocked();
@@ -59,12 +59,12 @@ export const createInstances = async (accounts: Signers): Promise<FhevmInstances
 };
 
 export const createInstance = async () => {
-  console.log('net url:', network.config.url);
+  console.log("net url:", network.config.url);
   const instance = await createFhevmInstance({
     kmsContractAddress: kmsAdd,
     aclContractAddress: aclAdd,
     networkUrl: network.config.url,
-    gatewayUrl: 'http://localhost:7077',
+    gatewayUrl: "http://localhost:7077",
   });
   return instance;
 };
@@ -79,7 +79,7 @@ const getDecryptor = () => {
       clientKey = readFileSync(FHE_CLIENT_KEY_PATH);
     } else {
       const home = homedir();
-      const clientKeyPath = path.join(home, 'network-fhe-keys/cks');
+      const clientKeyPath = path.join(home, "network-fhe-keys/cks");
       clientKey = readFileSync(clientKeyPath);
     }
   }
@@ -96,9 +96,9 @@ const getDecryptor = () => {
  * @returns {bool}
  */
 export const decryptBool = async (handle: bigint): Promise<boolean> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
-    return (await getClearText(handle)) === '1';
+    return (await getClearText(handle)) === "1";
   } else {
     return getDecryptor().decryptBool(await getCiphertext(handle, ethers));
   }
@@ -114,7 +114,7 @@ export const decryptBool = async (handle: bigint): Promise<boolean> => {
  * @returns {bigint}
  */
 export const decrypt4 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -132,7 +132,7 @@ export const decrypt4 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decrypt8 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -150,7 +150,7 @@ export const decrypt8 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decrypt16 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -168,7 +168,7 @@ export const decrypt16 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decrypt32 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -186,7 +186,7 @@ export const decrypt32 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decrypt64 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -204,7 +204,7 @@ export const decrypt64 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decrypt128 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -222,7 +222,7 @@ export const decrypt128 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decrypt256 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -240,10 +240,10 @@ export const decrypt256 = async (handle: bigint): Promise<bigint> => {
  * @returns {string}
  */
 export const decryptAddress = async (handle: bigint): Promise<string> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     const bigintAdd = BigInt(await getClearText(handle));
-    const handleStr = '0x' + bigintAdd.toString(16).padStart(40, '0');
+    const handleStr = "0x" + bigintAdd.toString(16).padStart(40, "0");
     return handleStr;
   } else {
     return getDecryptor().decryptAddress(await getCiphertext(handle, ethers));
@@ -260,7 +260,7 @@ export const decryptAddress = async (handle: bigint): Promise<string> => {
  * @returns {bigint}
  */
 export const decryptEbytes64 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -278,7 +278,7 @@ export const decryptEbytes64 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decryptEbytes128 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {
@@ -296,7 +296,7 @@ export const decryptEbytes128 = async (handle: bigint): Promise<bigint> => {
  * @returns {bigint}
  */
 export const decryptEbytes256 = async (handle: bigint): Promise<bigint> => {
-  if (network.name === 'hardhat') {
+  if (network.name === "hardhat") {
     await awaitCoprocessor();
     return BigInt(await getClearText(handle));
   } else {

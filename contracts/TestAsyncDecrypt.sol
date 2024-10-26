@@ -73,23 +73,6 @@ contract TestAsyncDecrypt is GatewayCaller {
         TFHE.allowThis(xAddress2);
     }
 
-    /// @notice Function to request decryption of a boolean value with an infinite loop in the callback
-    function requestBoolInfinite() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = Gateway.toUint256(xBool);
-        Gateway.requestDecryption(cts, this.callbackBoolInfinite.selector, 0, block.timestamp + 100, false);
-    }
-
-    /// @notice Callback function for the infinite loop decryption request (WARNING: This function will never complete)
-    function callbackBoolInfinite(uint256 /*requestID*/, bool decryptedInput) public onlyGateway returns (bool) {
-        uint256 i = 0;
-        while (true) {
-            i++;
-        }
-        yBool = decryptedInput;
-        return yBool;
-    }
-
     /// @notice Function to request decryption with an excessive delay (should revert)
     function requestBoolAboveDelay() public {
         /// @dev This should revert due to the excessive delay
@@ -123,14 +106,6 @@ contract TestAsyncDecrypt is GatewayCaller {
         saveRequestedHandles(requestID, cts);
     }
 
-    /// @notice Attempt to request decryption of a fake boolean value (should revert)
-    function requestFakeBool() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000000);
-        /// @dev This should revert because the previous ebool is not honestly obtained
-        Gateway.requestDecryption(cts, this.callbackBool.selector, 0, block.timestamp + 100, false);
-    }
-
     /// @notice Callback function for non-trustless boolean decryption
     function callbackBool(uint256, bool decryptedInput) public onlyGateway returns (bool) {
         yBool = decryptedInput;
@@ -162,14 +137,6 @@ contract TestAsyncDecrypt is GatewayCaller {
         Gateway.requestDecryption(cts, this.callbackUint4.selector, 0, block.timestamp + 100, false);
     }
 
-    /// @notice Attempt to request decryption of a fake 4-bit unsigned integer (should revert)
-    function requestFakeUint4() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000100);
-        /// @dev This should revert because the previous handle is not honestly obtained
-        Gateway.requestDecryption(cts, this.callbackUint4.selector, 0, block.timestamp + 100, false);
-    }
-
     /// @notice Callback function for 4-bit unsigned integer decryption
     /// @param decryptedInput The decrypted 4-bit unsigned integer
     /// @return The decrypted value
@@ -185,14 +152,6 @@ contract TestAsyncDecrypt is GatewayCaller {
         Gateway.requestDecryption(cts, this.callbackUint8.selector, 0, block.timestamp + 100, false);
     }
 
-    /// @notice Attempt to request decryption of a fake 8-bit unsigned integer (should revert)
-    function requestFakeUint8() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000200);
-        /// @dev This should revert because the previous handle is not honestly obtained
-        Gateway.requestDecryption(cts, this.callbackUint8.selector, 0, block.timestamp + 100, false);
-    }
-
     /// @notice Callback function for 8-bit unsigned integer decryption
     /// @param decryptedInput The decrypted 8-bit unsigned integer
     /// @return The decrypted value
@@ -205,14 +164,6 @@ contract TestAsyncDecrypt is GatewayCaller {
     function requestUint16() public {
         uint256[] memory cts = new uint256[](1);
         cts[0] = Gateway.toUint256(xUint16);
-        Gateway.requestDecryption(cts, this.callbackUint16.selector, 0, block.timestamp + 100, false);
-    }
-
-    /// @notice Attempt to request decryption of a fake 16-bit unsigned integer (should revert)
-    function requestFakeUint16() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000300);
-        /// @dev This should revert because the previous handle is not honestly obtained
         Gateway.requestDecryption(cts, this.callbackUint16.selector, 0, block.timestamp + 100, false);
     }
 
@@ -241,14 +192,6 @@ contract TestAsyncDecrypt is GatewayCaller {
         addParamsUint256(requestID, input2);
     }
 
-    /// @notice Attempt to request decryption of a fake 32-bit unsigned integer (should revert)
-    function requestFakeUint32() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000400);
-        /// @dev This should revert because the previous handle is not honestly obtained
-        Gateway.requestDecryption(cts, this.callbackUint32.selector, 0, block.timestamp + 100, false);
-    }
-
     /// @notice Callback function for 32-bit unsigned integer decryption
     /// @param requestID The ID of the decryption request
     /// @param decryptedInput The decrypted 32-bit unsigned integer
@@ -266,14 +209,6 @@ contract TestAsyncDecrypt is GatewayCaller {
     function requestUint64() public {
         uint256[] memory cts = new uint256[](1);
         cts[0] = Gateway.toUint256(xUint64);
-        Gateway.requestDecryption(cts, this.callbackUint64.selector, 0, block.timestamp + 100, false);
-    }
-
-    /// @notice Attempt to request decryption of a fake 64-bit unsigned integer (should revert)
-    function requestFakeUint64() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000500);
-        /// @dev This should revert because the previous handle is not honestly obtained
         Gateway.requestDecryption(cts, this.callbackUint64.selector, 0, block.timestamp + 100, false);
     }
 
@@ -418,14 +353,6 @@ contract TestAsyncDecrypt is GatewayCaller {
         yAddress = decryptedInput1;
         yAddress2 = decryptedInput2;
         return decryptedInput1;
-    }
-
-    /// @notice Attempt to request decryption of a fake address (should revert)
-    function requestFakeAddress() public {
-        uint256[] memory cts = new uint256[](1);
-        cts[0] = uint256(0x4200000000000000000000000000000000000000000000000000000000000700);
-        /// @dev This should revert because the previous handle is not honestly obtained
-        Gateway.requestDecryption(cts, this.callbackAddress.selector, 0, block.timestamp + 100, false);
     }
 
     /// @notice Callback function for address decryption

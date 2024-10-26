@@ -77,9 +77,8 @@
     "access": "public"
   },
   "scripts": {
-    "clean": "rimraf ./artifacts ./cache ./coverage ./types ./coverage.json && pnpm typechain",
+    "clean": "rimraf ./fhevmTemp ./artifacts ./cache ./coverage ./types ./coverage.json && pnpm typechain",
     "compile": "cross-env TS_NODE_TRANSPILE_ONLY=true hardhat compile",
-    "deploy:contracts": "hardhat deploy",
     "lint": "pnpm lint:sol && pnpm lint:ts && pnpm prettier:check",
     "lint:sol": "solhint --max-warnings 25 \"contracts/**/*.sol\"",
     "lint:ts": "eslint .",
@@ -88,10 +87,7 @@
     "prettier:write": "prettier --write \"**/*.{js,json,md,sol,ts,yml}\"",
     "typechain": "cross-env TS_NODE_TRANSPILE_ONLY=true hardhat typechain",
     "test": "hardhat test --network hardhat",
-    "coverage:mock": "hardhat coverage",
-    "task:getEthereumAddress": "hardhat task:getEthereumAddress",
-    "task:deployERC20": "hardhat task:deployERC20",
-    "task:accounts": "hardhat task:accounts"
+    "coverage": "hardhat coverage"
   },
   "dependencies": {
     "extra-bigint": "^1.1.18",

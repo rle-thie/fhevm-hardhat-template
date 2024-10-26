@@ -1,9 +1,9 @@
-import type { FhevmInstance } from 'fhevmjs';
+import type { FhevmInstance } from "fhevmjs";
 
-import { BlindAuction, Comp, EncryptedERC20, GovernorZama, IdentifiedERC20, IdentityRegistry, Rand } from '../types';
-import type { Signers } from './signers';
+import { BlindAuction, Comp, EncryptedERC20, GovernorZama, IdentifiedERC20, IdentityRegistry, Rand } from "../types";
+import type { Signers } from "./signers";
 
-declare module 'mocha' {
+declare module "mocha" {
   export interface Context {
     signers: Signers;
     contractAddress: string;
