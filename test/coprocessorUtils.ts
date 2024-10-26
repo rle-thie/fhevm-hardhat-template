@@ -5,17 +5,26 @@ import { ethers } from "hardhat";
 import hre from "hardhat";
 import { Database } from "sqlite3";
 
-const parsedEnvCoprocessor = dotenv.parse(fs.readFileSync("node_modules/fhevm/lib/.env.exec"));
+import operatorsPrices from "./operatorsPrices.json";
+
+const parsedEnvCoprocessor = dotenv.parse(fs.readFileSync("node_modules/fhevm-core-contracts/addresses/.env.exec"));
+const coprocAddress = parsedEnvCoprocessor.TFHE_EXECUTOR_CONTRACT_ADDRESS;
 const coprocAdd = parsedEnvCoprocessor.TFHE_EXECUTOR_CONTRACT_ADDRESS.replace(/^0x/, "")
   .replace(/^0+/, "")
   .toLowerCase();
+
+const parsedEnvACL = dotenv.parse(fs.readFileSync("node_modules/fhevm-core-contracts/addresses/.env.acl"));
+const aclAddress = parsedEnvACL.ACL_CONTRACT_ADDRESS;
+let chainId: number;
 
 let firstBlockListening = 0;
 let lastBlockSnapshot = 0;
 let lastCounterRand = 0;
 let counterRand = 0;
 
-const contractABI = JSON.parse(fs.readFileSync("abi/TFHEExecutor.json").toString()).abi;
+const contractABI = JSON.parse(
+  fs.readFileSync("artifacts/fhevmTemp/contracts/TFHEExecutor.sol/TFHEExecutor.json").toString(),
+).abi;
 
 const iface = new ethers.Interface(contractABI);
 
@@ -30,7 +39,7 @@ const selectors = functions.reduce((acc, func) => {
 //const db = new Database('./sql.db'); // on-disk db for debugging
 const db = new Database(":memory:");
 
-function insertSQL(handle: string, clearText: bigint, replace: boolean = false) {
+export function insertSQL(handle: string, clearText: BigInt, replace: boolean = false) {
   if (replace) {
     // this is useful if using snapshots while sampling different random numbers on each revert
     db.run("INSERT OR REPLACE INTO ciphertexts (handle, clearText) VALUES (?, ?)", [handle, clearText.toString()]);
@@ -41,12 +50,12 @@ function insertSQL(handle: string, clearText: bigint, replace: boolean = false) 
 
 // Decrypt any handle, bypassing ACL
 // WARNING : only for testing or internal use
-export const getClearText = async (handle: bigint): Promise<string> => {
+export const getClearText = async (handle: BigInt): Promise<string> => {
   const handleStr = "0x" + handle.toString(16).padStart(64, "0");
 
   return new Promise((resolve, reject) => {
     let attempts = 0;
-    const maxRetries = 10;
+    const maxRetries = 100;
 
     function executeQuery() {
       db.get("SELECT clearText FROM ciphertexts WHERE handle = ?", [handleStr], (err, row) => {
@@ -105,6 +114,11 @@ interface EvmState {
   memory: string[];
 }
 
+interface FHEVMEvent {
+  eventName: string;
+  args: object;
+}
+
 function extractCalldata(memory: string[], offset: number, size: number): string {
   const startIndex = Math.floor(offset / 32);
   const endIndex = Math.ceil((offset + size) / 32);
@@ -117,21 +131,6 @@ function extractCalldata(memory: string[], offset: number, size: number): string
   const calldataEnd = calldataStart + size * 2;
   return calldata.slice(calldataStart, calldataEnd);
 }
-
-const TypesBytesSize = {
-  0: 1, //ebool
-  1: 1, //euint4
-  2: 1, //euint8
-  3: 2, //euint16
-  4: 4, //euint32
-  5: 8, //euint64
-  6: 16, //euint128
-  7: 20, //eaddress
-  8: 32, //euint256
-  9: 64, //ebytes64
-  10: 128, //ebytes128
-  11: 256, //ebytes256
-};
 
 const NumBits = {
   0: 1n, //ebool
@@ -181,7 +180,14 @@ function getRandomBigInt(numBits: number): bigint {
   return randomBigInt;
 }
 
-async function insertHandle(obj2: EvmState, validIdxes: [number]) {
+async function insertHandle(
+  obj2: EvmState,
+  validIdxes: [number],
+  blockStatus: {
+    blockhash: string;
+    timestamp: number;
+  },
+) {
   const obj = obj2.value;
   if (isCoprocAdd(obj!.stack.at(-2))) {
     const argsOffset = Number(`0x${obj!.stack.at(-4)}`);
@@ -204,8 +210,21 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
         clearText = decodedData[0];
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "bytes1"],
-            [Operators.trivialEncrypt, decodedData[0], decodedData[1]],
+            ["uint8", "uint256", "bytes1", "address", "uint256"],
+            [Operators.trivialEncrypt, decodedData[0], decodedData[1], aclAddress, chainId],
+          ),
+        );
+        handle = appendType(handle, resultType);
+        insertSQL(handle, clearText);
+        break;
+
+      case "trivialEncrypt(bytes,bytes1)":
+        resultType = Number(decodedData[1]);
+        clearText = decodedData[0];
+        handle = ethers.keccak256(
+          ethers.solidityPacked(
+            ["uint8", "bytes", "bytes1", "address", "uint256"],
+            [Operators.trivialEncrypt, decodedData[0], decodedData[1], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, resultType);
@@ -215,8 +234,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheAdd(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheAdd, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheAdd, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -237,8 +256,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheSub(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheSub, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheSub, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -261,8 +280,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheMul(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheMul, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheMul, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -283,8 +302,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheDiv(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheDiv, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheDiv, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -302,8 +321,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheRem(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheRem, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheRem, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -321,8 +340,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheBitAnd(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheBitAnd, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheBitAnd, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -343,8 +362,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheBitOr(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheBitOr, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheBitOr, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -365,8 +384,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheBitXor(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheBitXor, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheBitXor, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -387,8 +406,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheShl(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheShl, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheShl, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -409,8 +428,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheShr(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheShr, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheShr, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -431,8 +450,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheRotl(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheRotl, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheRotl, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -456,8 +475,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheRotr(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheRotr, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheRotr, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         lhsType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
@@ -481,8 +500,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheEq(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheEq, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheEq, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, 0);
@@ -496,11 +515,29 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
         insertSQL(handle, clearText);
         break;
 
+      case "fheEq(uint256,bytes,bytes1)":
+        handle = ethers.keccak256(
+          ethers.solidityPacked(
+            ["uint8", "uint256", "bytes", "bytes1", "address", "uint256"],
+            [Operators.fheEq, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
+          ),
+        );
+        handle = appendType(handle, 0);
+        clearLHS = await getClearText(decodedData[0]);
+        if (decodedData[2] === "0x01") {
+          clearText = BigInt(clearLHS) === BigInt(decodedData[1]) ? 1n : 0n;
+        } else {
+          clearRHS = await getClearText(decodedData[1]);
+          clearText = BigInt(clearLHS) === BigInt(clearRHS) ? 1n : 0n;
+        }
+        insertSQL(handle, clearText);
+        break;
+
       case "fheNe(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheNe, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheNe, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, 0);
@@ -514,11 +551,29 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
         insertSQL(handle, clearText);
         break;
 
+      case "fheNe(uint256,bytes,bytes1)":
+        handle = ethers.keccak256(
+          ethers.solidityPacked(
+            ["uint8", "uint256", "bytes", "bytes1", "address", "uint256"],
+            [Operators.fheNe, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
+          ),
+        );
+        handle = appendType(handle, 0);
+        clearLHS = await getClearText(decodedData[0]);
+        if (decodedData[2] === "0x01") {
+          clearText = BigInt(clearLHS) !== BigInt(decodedData[1]) ? 1n : 0n;
+        } else {
+          clearRHS = await getClearText(decodedData[1]);
+          clearText = BigInt(clearLHS) !== BigInt(clearRHS) ? 1n : 0n;
+        }
+        insertSQL(handle, clearText);
+        break;
+
       case "fheGe(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheGe, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheGe, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, 0);
@@ -535,8 +590,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheGt(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheGt, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheGt, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, 0);
@@ -553,8 +608,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheLe(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheLe, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheLe, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, 0);
@@ -571,8 +626,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheLt(uint256,uint256,bytes1)":
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheLt, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheLt, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, 0);
@@ -591,8 +646,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
         resultType = lhsType;
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheMax, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheMax, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, resultType);
@@ -611,8 +666,8 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
         resultType = lhsType;
         handle = ethers.keccak256(
           ethers.solidityPacked(
-            ["uint8", "uint256", "uint256", "bytes1"],
-            [Operators.fheMin, decodedData[0], decodedData[1], decodedData[2]],
+            ["uint8", "uint256", "uint256", "bytes1", "address", "uint256"],
+            [Operators.fheMin, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
           ),
         );
         handle = appendType(handle, resultType);
@@ -629,7 +684,10 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "cast(uint256,bytes1)":
         resultType = parseInt(decodedData[1]);
         handle = ethers.keccak256(
-          ethers.solidityPacked(["uint8", "uint256", "bytes1"], [Operators.cast, decodedData[0], decodedData[1]]),
+          ethers.solidityPacked(
+            ["uint8", "uint256", "bytes1", "address", "uint256"],
+            [Operators.cast, decodedData[0], decodedData[1], aclAddress, chainId],
+          ),
         );
         clearText = BigInt(await getClearText(decodedData[0])) % 2n ** NumBits[resultType];
         handle = appendType(handle, resultType);
@@ -638,7 +696,12 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
 
       case "fheNot(uint256)":
         resultType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
-        handle = ethers.keccak256(ethers.solidityPacked(["uint8", "uint256"], [Operators.fheNot, decodedData[0]]));
+        handle = ethers.keccak256(
+          ethers.solidityPacked(
+            ["uint8", "uint256", "address", "uint256"],
+            [Operators.fheNot, decodedData[0], aclAddress, chainId],
+          ),
+        );
         handle = appendType(handle, resultType);
         clearText = BigInt(await getClearText(decodedData[0]));
         clearText = bitwiseNotUintBits(clearText, Number(NumBits[resultType]));
@@ -647,7 +710,12 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
 
       case "fheNeg(uint256)":
         resultType = parseInt(decodedData[0].toString(16).slice(-4, -2), 16);
-        handle = ethers.keccak256(ethers.solidityPacked(["uint8", "uint256"], [Operators.fheNeg, decodedData[0]]));
+        handle = ethers.keccak256(
+          ethers.solidityPacked(
+            ["uint8", "uint256", "address", "uint256"],
+            [Operators.fheNeg, decodedData[0], aclAddress, chainId],
+          ),
+        );
         handle = appendType(handle, resultType);
         clearText = BigInt(await getClearText(decodedData[0]));
         clearText = bitwiseNotUintBits(clearText, Number(NumBits[resultType]));
@@ -656,51 +724,45 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
         break;
 
       case "verifyCiphertext(bytes32,address,bytes,bytes1)":
-        {
-          handle = decodedData[0];
-          const type = parseInt(handle.slice(-4, -2), 16);
-          if (type !== 11) {
-            //not an ebytes256
-            const typeSize = TypesBytesSize[type];
-            const idx = parseInt(handle.slice(-6, -4), 16);
-            const inputProof = decodedData[2].replace(/^0x/, "");
-            clearText = BigInt("0x" + inputProof.slice(2 + 2 * 53 * idx, 2 + 2 * typeSize + 2 * 53 * idx));
-            insertSQL(handle, clearText);
-          } else {
-            const inputProof = decodedData[2].replace(/^0x/, "");
-            clearText = BigInt("0x" + inputProof.slice(2, 2 + 2 * 256));
-            insertSQL(handle, clearText);
-          }
+        try {
+          await getClearText(BigInt(decodedData[0]));
+        } catch {
+          throw Error("User input was not found in DB");
         }
         break;
 
       case "fheIfThenElse(uint256,uint256,uint256)":
-        {
-          resultType = parseInt(decodedData[1].toString(16).slice(-4, -2), 16);
-          handle = ethers.keccak256(
-            ethers.solidityPacked(
-              ["uint8", "uint256", "uint256", "uint256"],
-              [Operators.fheIfThenElse, decodedData[0], decodedData[1], decodedData[2]],
-            ),
-          );
-          handle = appendType(handle, resultType);
-          const clearControl = BigInt(await getClearText(decodedData[0]));
-          const clearIfTrue = BigInt(await getClearText(decodedData[1]));
-          const clearIfFalse = BigInt(await getClearText(decodedData[2]));
-          if (clearControl === 1n) {
-            clearText = clearIfTrue;
-          } else {
-            clearText = clearIfFalse;
-          }
-          insertSQL(handle, clearText);
+        resultType = parseInt(decodedData[1].toString(16).slice(-4, -2), 16);
+        handle = ethers.keccak256(
+          ethers.solidityPacked(
+            ["uint8", "uint256", "uint256", "uint256", "address", "uint256"],
+            [Operators.fheIfThenElse, decodedData[0], decodedData[1], decodedData[2], aclAddress, chainId],
+          ),
+        );
+        handle = appendType(handle, resultType);
+        const clearControl = BigInt(await getClearText(decodedData[0]));
+        const clearIfTrue = BigInt(await getClearText(decodedData[1]));
+        const clearIfFalse = BigInt(await getClearText(decodedData[2]));
+        if (clearControl === 1n) {
+          clearText = clearIfTrue;
+        } else {
+          clearText = clearIfFalse;
         }
+        insertSQL(handle, clearText);
         break;
 
       case "fheRand(bytes1)":
         if (validIdxes.includes(obj2.index)) {
           resultType = parseInt(decodedData[0], 16);
+          const preseed = ethers.keccak256(
+            ethers.solidityPacked(
+              ["uint256", "address", "uint256", "uint256", "uint256"],
+              [counterRand, aclAddress, chainId, blockStatus.blockhash, blockStatus.timestamp],
+            ),
+          );
+          const seed = preseed.slice(0, 34);
           handle = ethers.keccak256(
-            ethers.solidityPacked(["uint8", "bytes1", "uint256"], [Operators.fheRand, decodedData[0], counterRand]),
+            ethers.solidityPacked(["uint8", "bytes1", "bytes16"], [Operators.fheRand, decodedData[0], seed]),
           );
           handle = appendType(handle, resultType);
           clearText = getRandomBigInt(Number(NumBits[resultType]));
@@ -712,10 +774,17 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
       case "fheRandBounded(uint256,bytes1)":
         if (validIdxes.includes(obj2.index)) {
           resultType = parseInt(decodedData[1], 16);
+          const preseed = ethers.keccak256(
+            ethers.solidityPacked(
+              ["uint256", "address", "uint256", "uint256", "uint256"],
+              [counterRand, aclAddress, chainId, blockStatus.blockhash, blockStatus.timestamp],
+            ),
+          );
+          const seed = preseed.slice(0, 34);
           handle = ethers.keccak256(
             ethers.solidityPacked(
-              ["uint8", "uint256", "bytes1", "uint256"],
-              [Operators.fheRandBounded, decodedData[0], decodedData[1], counterRand],
+              ["uint8", "uint256", "bytes1", "bytes16"],
+              [Operators.fheRandBounded, decodedData[0], decodedData[1], seed],
             ),
           );
           handle = appendType(handle, resultType);
@@ -728,17 +797,15 @@ async function insertHandle(obj2: EvmState, validIdxes: [number]) {
   }
 }
 
-function bitwiseNotUintBits(value: bigint, numBits: number) {
+function bitwiseNotUintBits(value: BigInt, numBits: number) {
   if (typeof value !== "bigint") {
     throw new TypeError("The input value must be a BigInt.");
   }
   if (typeof numBits !== "number" || numBits <= 0) {
     throw new TypeError("The numBits parameter must be a positive integer.");
   }
-
   // Create the mask with numBits bits set to 1
   const BIT_MASK = (BigInt(1) << BigInt(numBits)) - BigInt(1);
-
   return ~value & BIT_MASK;
 }
 
@@ -748,31 +815,23 @@ function isCoprocAdd(longString: string): boolean {
   return normalizedLongString === coprocAdd;
 }
 
-async function processLogs(trace, validSubcallsIndexes) {
+async function processLogs(trace, validSubcallsIndexes, blockStatus) {
   for (const obj of trace.structLogs
     .map((value, index) => ({ value, index }))
     .filter((obj) => obj.value.op === "CALL")) {
-    await insertHandle(obj, validSubcallsIndexes);
+    await insertHandle(obj, validSubcallsIndexes, blockStatus);
   }
 }
 
 export const awaitCoprocessor = async (): Promise<void> => {
-  const pastTxHashes = await getAllPastTransactionHashes();
-  for (const txHash of pastTxHashes) {
-    const trace = await ethers.provider.send("debug_traceTransaction", [txHash[0]]);
-
-    if (!trace.failed) {
-      const callTree = await buildCallTree(trace, txHash[1]);
-      const validSubcallsIndexes = getValidSubcallsIds(callTree)[1];
-      await processLogs(trace, validSubcallsIndexes);
-    }
-  }
+  chainId = (await ethers.provider.getNetwork()).chainId;
+  await processAllPastTFHEExecutorEvents();
 };
 
 async function getAllPastTransactionHashes() {
   const provider = ethers.provider;
   const latestBlockNumber = await provider.getBlockNumber();
-  const txHashes = [];
+  let txHashes = [];
 
   if (hre.__SOLIDITY_COVERAGE_RUNNING !== true) {
     // evm_snapshot is not supported in coverage mode
@@ -788,7 +847,10 @@ async function getAllPastTransactionHashes() {
     const block = await provider.getBlock(i, true);
     block!.transactions.forEach((tx, index) => {
       const rcpt = block?.prefetchedTransactions[index];
-      txHashes.push([tx, { to: rcpt.to, status: rcpt.status }]);
+      txHashes.push([
+        tx,
+        { to: rcpt.to, status: rcpt.status, blockhash: block?.parentHash, timestamp: block?.timestamp },
+      ]);
     });
   }
   firstBlockListening = latestBlockNumber + 1;
@@ -805,9 +867,9 @@ async function buildCallTree(trace, receipt) {
   const callStack = [];
   const callTree = {
     id: 0,
-    type: receipt.to ? "TOPCALL" : "TOPCREATE",
+    type: !!receipt.to ? "TOPCALL" : "TOPCREATE",
     revert: receipt.status === 1 ? false : true,
-    to: receipt.to ? receipt.to : null,
+    to: !!receipt.to ? receipt.to : null,
     calls: [],
     indexTrace: 0,
   };
@@ -871,6 +933,18 @@ async function buildCallTree(trace, receipt) {
   return callTree;
 }
 
+function logCallContextsTree(callContext, indent = 0) {
+  const indentation = " ".repeat(indent);
+  console.log(`${indentation}id: ${callContext.id}, type: ${callContext.type}, revert: ${callContext.revert}`);
+
+  if (callContext.calls.length > 0) {
+    console.log(`${indentation}  Calls:`);
+    for (const call of callContext.calls) {
+      logCallContextsTree(call, indent + 4);
+    }
+  }
+}
+
 function getValidSubcallsIds(tree) {
   const result = [];
   const resultIndexes = [];
@@ -890,4 +964,786 @@ function getValidSubcallsIds(tree) {
   traverse(tree, false);
 
   return [result, resultIndexes];
+}
+
+const abi = [
+  "event FheAdd(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheSub(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheMul(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheDiv(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheRem(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheBitAnd(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheBitOr(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheBitXor(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheShl(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheShr(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheRotl(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheRotr(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheEq(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheEqBytes(uint256 lhs, bytes rhs, bytes1 scalarByte, uint256 result)",
+  "event FheNe(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheNeBytes(uint256 lhs, bytes rhs, bytes1 scalarByte, uint256 result)",
+  "event FheGe(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheGt(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheLe(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheLt(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheMin(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheMax(uint256 lhs, uint256 rhs, bytes1 scalarByte, uint256 result)",
+  "event FheNeg(uint256 ct, uint256 result)",
+  "event FheNot(uint256 ct, uint256 result)",
+  "event VerifyCiphertext(bytes32 inputHandle,address userAddress,bytes inputProof,bytes1 inputType,uint256 result)",
+  "event Cast(uint256 ct, bytes1 toType, uint256 result)",
+  "event TrivialEncrypt(uint256 pt, bytes1 toType, uint256 result)",
+  "event TrivialEncryptBytes(bytes pt, bytes1 toType, uint256 result)",
+  "event FheIfThenElse(uint256 control, uint256 ifTrue, uint256 ifFalse, uint256 result)",
+  "event FheRand(bytes1 randType, uint256 result)",
+  "event FheRandBounded(uint256 upperBound, bytes1 randType, uint256 result)",
+];
+
+async function processAllPastTFHEExecutorEvents() {
+  const provider = ethers.provider;
+  const latestBlockNumber = await provider.getBlockNumber();
+
+  if (hre.__SOLIDITY_COVERAGE_RUNNING !== true) {
+    // evm_snapshot is not supported in coverage mode
+    [lastBlockSnapshot, lastCounterRand] = await provider.send("get_lastBlockSnapshot");
+    if (lastBlockSnapshot < firstBlockListening) {
+      firstBlockListening = lastBlockSnapshot + 1;
+      counterRand = Number(lastCounterRand);
+    }
+  }
+
+  const contract = new ethers.Contract(coprocAddress, abi, provider);
+
+  // Fetch all events emitted by the contract
+  const filter = {
+    address: coprocAddress,
+    fromBlock: firstBlockListening,
+    toBlock: latestBlockNumber,
+  };
+
+  const logs = await provider.getLogs(filter);
+
+  const events = logs
+    .map((log) => {
+      try {
+        const parsedLog = contract.interface.parseLog(log);
+        return {
+          eventName: parsedLog.name,
+          args: parsedLog.args,
+        };
+      } catch (e) {
+        // If the log cannot be parsed, skip it
+        return null;
+      }
+    })
+    .filter((event) => event !== null);
+
+  firstBlockListening = latestBlockNumber + 1;
+  if (hre.__SOLIDITY_COVERAGE_RUNNING !== true) {
+    // evm_snapshot is not supported in coverage mode
+    await provider.send("set_lastBlockSnapshot", [firstBlockListening]);
+  }
+  events.map(async (event) => await insertHandleFromEvent(event));
+}
+
+async function insertHandleFromEvent(event: FHEVMEvent) {
+  let handle;
+  let clearText;
+  let clearLHS;
+  let clearRHS;
+  let resultType;
+  let shift;
+
+  switch (event.eventName) {
+    case "TrivialEncrypt":
+      clearText = event.args[0];
+      handle = ethers.toBeHex(event.args[2], 32);
+      insertSQL(handle, clearText);
+      break;
+
+    case "TrivialEncryptBytes":
+      clearText = event.args[0];
+      handle = ethers.toBeHex(event.args[2], 32);
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheAdd":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) + event.args[1];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) + BigInt(clearRHS);
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(ethers.toBeHex(handle, 32), clearText);
+      break;
+
+    case "FheSub":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) - event.args[1];
+        if (clearText < 0n) clearText = clearText + 2n ** NumBits[resultType];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) - BigInt(clearRHS);
+        if (clearText < 0n) clearText = clearText + 2n ** NumBits[resultType];
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheMul":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) * event.args[1];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) * BigInt(clearRHS);
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheDiv":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) / event.args[1];
+      } else {
+        throw new Error("Non-scalar div not implemented yet");
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheRem":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) % event.args[1];
+      } else {
+        throw new Error("Non-scalar rem not implemented yet");
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheBitAnd":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) & event.args[1];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) & BigInt(clearRHS);
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheBitOr":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) | event.args[1];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) | BigInt(clearRHS);
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheBitXor":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) ^ event.args[1];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) ^ BigInt(clearRHS);
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheShl":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) << event.args[1] % NumBits[resultType];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) << BigInt(clearRHS) % NumBits[resultType];
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheShr":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) >> event.args[1] % NumBits[resultType];
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) >> BigInt(clearRHS) % NumBits[resultType];
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheRotl":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        shift = event.args[1] % NumBits[resultType];
+        clearText = (BigInt(clearLHS) << shift) | (BigInt(clearLHS) >> (NumBits[resultType] - shift));
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        shift = BigInt(clearRHS) % NumBits[resultType];
+        clearText = (BigInt(clearLHS) << shift) | (BigInt(clearLHS) >> (NumBits[resultType] - shift));
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheRotr":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        shift = event.args[1] % NumBits[resultType];
+        clearText = (BigInt(clearLHS) >> shift) | (BigInt(clearLHS) << (NumBits[resultType] - shift));
+        clearText = clearText % 2n ** NumBits[resultType];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        shift = BigInt(clearRHS) % NumBits[resultType];
+        clearText = (BigInt(clearLHS) >> shift) | (BigInt(clearLHS) << (NumBits[resultType] - shift));
+        clearText = clearText % 2n ** NumBits[resultType];
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheEq":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) === event.args[1] ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) === BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheEqBytes":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) === BigInt(event.args[1]) ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) === BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheNe":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) !== event.args[1] ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) !== BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheNeBytes":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) !== BigInt(event.args[1]) ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) !== BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheGe":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) >= event.args[1] ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) >= BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheGt":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) > event.args[1] ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) > BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheLe":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) <= event.args[1] ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) <= BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheLt":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) < event.args[1] ? 1n : 0n;
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) < BigInt(clearRHS) ? 1n : 0n;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheMax":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) > event.args[1] ? clearLHS : event.args[1];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) > BigInt(clearRHS) ? clearLHS : clearRHS;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheMin":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearLHS = await getClearText(event.args[0]);
+      if (event.args[2] === "0x01") {
+        clearText = BigInt(clearLHS) < event.args[1] ? clearLHS : event.args[1];
+      } else {
+        clearRHS = await getClearText(event.args[1]);
+        clearText = BigInt(clearLHS) < BigInt(clearRHS) ? clearLHS : clearRHS;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "Cast":
+      resultType = parseInt(event.args[1]);
+      handle = ethers.toBeHex(event.args[2], 32);
+      clearText = BigInt(await getClearText(event.args[0])) % 2n ** NumBits[resultType];
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheNot":
+      handle = ethers.toBeHex(event.args[1], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearText = BigInt(await getClearText(event.args[0]));
+      clearText = bitwiseNotUintBits(clearText, Number(NumBits[resultType]));
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheNeg":
+      handle = ethers.toBeHex(event.args[1], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      clearText = BigInt(await getClearText(event.args[0]));
+      clearText = bitwiseNotUintBits(clearText, Number(NumBits[resultType]));
+      clearText = (clearText + 1n) % 2n ** NumBits[resultType];
+      insertSQL(handle, clearText);
+      break;
+
+    case "VerifyCiphertext":
+      handle = event.args[0];
+      try {
+        await getClearText(BigInt(handle));
+      } catch {
+        throw Error("User input was not found in DB");
+      }
+      break;
+
+    case "FheIfThenElse":
+      handle = ethers.toBeHex(event.args[3], 32);
+      resultType = parseInt(handle.slice(-4, -2), 16);
+      handle = ethers.toBeHex(event.args[3], 32);
+      const clearControl = BigInt(await getClearText(event.args[0]));
+      const clearIfTrue = BigInt(await getClearText(event.args[1]));
+      const clearIfFalse = BigInt(await getClearText(event.args[2]));
+      if (clearControl === 1n) {
+        clearText = clearIfTrue;
+      } else {
+        clearText = clearIfFalse;
+      }
+      insertSQL(handle, clearText);
+      break;
+
+    case "FheRand":
+      resultType = parseInt(event.args[0], 16);
+      handle = ethers.toBeHex(event.args[1], 32);
+      clearText = getRandomBigInt(Number(NumBits[resultType]));
+      insertSQL(handle, clearText, true);
+      counterRand++;
+      break;
+
+    case "FheRandBounded":
+      resultType = parseInt(event.args[1], 16);
+      handle = ethers.toBeHex(event.args[2], 32);
+      clearText = getRandomBigInt(Number(log2(BigInt(event.args[0]))));
+      insertSQL(handle, clearText, true);
+      counterRand++;
+      break;
+  }
+}
+
+export function getFHEGasFromTxReceipt(receipt: ethers.TransactionReceipt): number {
+  if (hre.network.name !== "hardhat") {
+    throw Error("FHEGas tracking is currently implemented only in mocked mode");
+  }
+  if (receipt.status === 0) {
+    throw new Error("Transaction reverted");
+  }
+  const contract = new ethers.Contract(coprocAddress, abi, ethers.provider);
+  const relevantLogs = receipt.logs.filter((log: ethers.Log) => {
+    if (log.address.toLowerCase() !== coprocAddress.toLowerCase()) {
+      return false;
+    }
+    try {
+      const parsedLog = contract.interface.parseLog({
+        topics: log.topics,
+        data: log.data,
+      });
+      return abi.some((item) => item.startsWith(`event ${parsedLog.name}`) && parsedLog.name !== "VerifyCiphertext");
+    } catch {
+      return false;
+    }
+  });
+  const FHELogs = relevantLogs.map((log: ethers.Log) => {
+    const parsedLog = contract.interface.parseLog({
+      topics: log.topics,
+      data: log.data,
+    });
+    return {
+      name: parsedLog.name,
+      args: parsedLog.args,
+    };
+  });
+  let FHEGasConsumed = 0;
+  for (const event of FHELogs) {
+    let type;
+    let handle;
+    switch (event.name) {
+      case "TrivialEncrypt":
+        type = parseInt(event.args[1], 16);
+        FHEGasConsumed += operatorsPrices["trivialEncrypt"].types[type];
+        break;
+
+      case "TrivialEncryptBytes":
+        type = parseInt(event.args[1], 16);
+        FHEGasConsumed += operatorsPrices["trivialEncrypt"].types[type];
+        break;
+
+      case "FheAdd":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheAdd"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheAdd"].nonScalar[type];
+        }
+        break;
+
+      case "FheSub":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheSub"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheSub"].nonScalar[type];
+        }
+        break;
+
+      case "FheMul":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheMul"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheMul"].nonScalar[type];
+        }
+        break;
+
+      case "FheDiv":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheDiv"].scalar[type];
+        } else {
+          throw new Error("Non-scalar div not implemented yet");
+        }
+        break;
+
+      case "FheRem":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheRem"].scalar[type];
+        } else {
+          throw new Error("Non-scalar rem not implemented yet");
+        }
+        break;
+
+      case "FheBitAnd":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheBitAnd"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheBitAnd"].nonScalar[type];
+        }
+        break;
+
+      case "FheBitOr":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheBitOr"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheBitOr"].nonScalar[type];
+        }
+        break;
+
+      case "FheBitXor":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheBitXor"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheBitXor"].nonScalar[type];
+        }
+        break;
+
+      case "FheShl":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheBitShl"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheBitShl"].nonScalar[type];
+        }
+        break;
+
+      case "FheShr":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheBitShr"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheBitShr"].nonScalar[type];
+        }
+        break;
+
+      case "FheRotl":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheRotl"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheRotl"].nonScalar[type];
+        }
+        break;
+
+      case "FheRotr":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheRotr"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheRotr"].nonScalar[type];
+        }
+        break;
+
+      case "FheEq":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheEq"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheEq"].nonScalar[type];
+        }
+        break;
+
+      case "FheEqBytes":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheEq"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheEq"].nonScalar[type];
+        }
+
+      case "FheNe":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheNe"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheNe"].nonScalar[type];
+        }
+        break;
+
+      case "FheNeBytes":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheNe"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheNe"].nonScalar[type];
+        }
+        break;
+
+      case "FheGe":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheGe"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheGe"].nonScalar[type];
+        }
+        break;
+
+      case "FheGt":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheGt"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheGt"].nonScalar[type];
+        }
+        break;
+
+      case "FheLe":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheLe"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheLe"].nonScalar[type];
+        }
+        break;
+
+      case "FheLt":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheLt"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheLt"].nonScalar[type];
+        }
+        break;
+
+      case "FheMax":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheMax"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheMax"].nonScalar[type];
+        }
+        break;
+
+      case "FheMin":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        if (event.args[2] === "0x01") {
+          FHEGasConsumed += operatorsPrices["fheMin"].scalar[type];
+        } else {
+          FHEGasConsumed += operatorsPrices["fheMin"].nonScalar[type];
+        }
+        break;
+
+      case "Cast":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        FHEGasConsumed += operatorsPrices["cast"].types[type];
+        break;
+
+      case "FheNot":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        FHEGasConsumed += operatorsPrices["fheNot"].types[type];
+        break;
+
+      case "FheNeg":
+        handle = ethers.toBeHex(event.args[0], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        FHEGasConsumed += operatorsPrices["fheNeg"].types[type];
+        break;
+
+      case "FheIfThenElse":
+        handle = ethers.toBeHex(event.args[3], 32);
+        type = parseInt(handle.slice(-4, -2), 16);
+        FHEGasConsumed += operatorsPrices["ifThenElse"].types[type];
+        break;
+
+      case "FheRand":
+        type = parseInt(event.args[0], 16);
+        FHEGasConsumed += operatorsPrices["fheRand"].types[type];
+        break;
+
+      case "FheRandBounded":
+        type = parseInt(event.args[1], 16);
+        FHEGasConsumed += operatorsPrices["fheRandBounded"].types[type];
+        break;
+    }
+  }
+  return FHEGasConsumed;
 }
