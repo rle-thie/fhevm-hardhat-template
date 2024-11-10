@@ -1,7 +1,6 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
 
-import { awaitAllDecryptionResults, initGateway } from "../asyncDecrypt";
 import { createInstances } from "../instance";
 import { getSigners, initSigners } from "../signers";
 
@@ -9,7 +8,6 @@ describe("EncryptedCounter", function () {
   before(async function () {
     await initSigners(2); // Initialize signers
     this.signers = await getSigners();
-    await initGateway(); // Initialize the gateway for decryption
   });
 
   beforeEach(async function () {
